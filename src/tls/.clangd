@@ -1,0 +1,77 @@
+# .clangd — Language server configuration for the TLS source tree.
+#
+# The TLS sources use OpenSSL 3.x APIs built from source inside Docker
+# (Ubuntu 24.04) at /opt/openssl. On a Windows development host the
+# language server cannot find these headers and emits cascading "unknown
+# type" diagnostics. These settings tell clangd to treat the files as a
+# Linux cross-compilation target so that OpenSSL and POSIX headers resolve
+# correctly for code navigation and editing.
+#
+# Build and execution happen exclusively inside Docker. Clangd on the host
+# is used only for code navigation, completion, and editing assistance.
+
+CompileFlags:
+  Add:
+    # Declare the target triple so clangd resolves POSIX and glibc headers
+    # from a Linux sysroot even when the host is Windows.
+    - --target=x86_64-pc-linux-gnu
+
+    # POSIX.1-2008 feature-test macro — must precede any system-header
+    # inclusion so that clock_gettime, CLOCK_MONOTONIC, usleep, etc. are
+    # visible.
+    - -D_POSIX_C_SOURCE=200809L
+    - -D_GNU_SOURCE
+
+    # C standard: match the CMakeLists.txt setting.
+    - -std=c11
+
+    # OQS-enabled OpenSSL headers (installed inside the Docker container).
+    # Adjust this path if your container installs to a different prefix.
+    - -I/opt/openssl/include
+
+    # liboqs headers (for reference, even though the TLS sources only use
+    # the OQS-Provider via the standard OpenSSL provider API).
+    - -I/opt/oqs/include
+
+    # Do not stop after the first batch of errors so all diagnostics are
+    # visible in the editor.
+    - -ferror-limit=0
+
+  # Strip Windows-specific flags that CMake or the host toolchain may add
+  # so they do not confuse the Linux-targeting clangd invocation.
+  Remove:
+    - -fms-extensions
+    - -fms-compatibility
+    - /W*
+    - /wd*
+    - /MT
+    - /MD
+
+Diagnostics:
+  # Downgrade "file not found" for OpenSSL and OQS headers from an error
+  # to a suppressed notice so that dependent "unknown type" cascades are
+  # also hidden when the headers are genuinely absent on the host.
+  Suppress:
+    - pp_file_not_found
+    - pp_include_next_absolute_path
+
+  # Clang-tidy checks appropriate for this codebase.
+  ClangTidy:
+    Add:
+      - clang-analyzer-*
+      - bugprone-*
+      - performance-*
+      - cert-*
+    Remove:
+      # OpenSSL macros and the OQS-Provider use reserved identifiers
+      # extensively; suppress this check to avoid unactionable noise.
+      - bugprone-reserved-identifier
+      - bugprone-macro-parentheses
+      # cert-err33-c fires on every SSL_* call that returns int; the TLS
+      # client already checks return values explicitly.
+      - cert-err33-c
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true

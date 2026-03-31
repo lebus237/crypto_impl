@@ -1,0 +1,152 @@
+name: pqc-eval
+
+networks:
+  eval-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  certs:
+    driver: local
+  results:
+    driver: local
+
+# ── Common reusable settings ───────────────────────────────────────────────────
+x-common-env: &common-env
+  CERT_DIR: /certs
+  RESULTS_DIR: /results
+  N_RUNS: "${N_RUNS:-1000}"
+  WARMUP_RUNS: "${WARMUP_RUNS:-50}"
+
+x-common-volumes: &common-volumes
+  - certs:/certs
+  - results:/results
+
+services:
+
+  # ── Base image builder ────────────────────────────────────────────────────────
+  base:
+    build:
+      context: .
+      dockerfile: docker/base/Dockerfile
+    image: pqc-base:latest
+    command: ["echo", "Base image built."]
+    profiles: ["build"]
+
+  # ── TLS Server ────────────────────────────────────────────────────────────────
+  tls-server:
+    build:
+      context: .
+      dockerfile: docker/tls-server/Dockerfile
+      args:
+        BASE_IMAGE: pqc-base:latest
+    image: pqc-tls-server:latest
+    container_name: tls-server
+    networks:
+      eval-net:
+        ipv4_address: 172.28.0.10
+    ports:
+      - "4433:4433/tcp"
+    volumes: *common-volumes
+    environment:
+      <<: *common-env
+      TLS_PORT: "4433"
+      TLS_SIG_ALG: "${SIG_ALG:-mldsa65}"
+    healthcheck:
+      test: ["CMD", "sh", "-c",
+        "/opt/openssl/bin/openssl s_client -connect localhost:4433 -brief < /dev/null 2>&1 | grep -q ESTABLISHED || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── TLS Client ────────────────────────────────────────────────────────────────
+  tls-client:
+    build:
+      context: .
+      dockerfile: docker/tls-client/Dockerfile
+      args:
+        BASE_IMAGE: pqc-base:latest
+    image: pqc-tls-client:latest
+    container_name: tls-client
+    networks:
+      eval-net:
+        ipv4_address: 172.28.0.11
+    volumes: *common-volumes
+    environment:
+      <<: *common-env
+      TLS_SERVER_HOST: tls-server
+      TLS_SERVER_PORT: "4433"
+      TLS_KEM_GROUP: "${KEM_GROUP:-mlkem768}"
+      TLS_SIG_ALG: "${SIG_ALG:-mldsa65}"
+      OUTPUT_LABEL: "tls_${KEM_GROUP:-mlkem768}_${NET_CONDITION:-ideal}"
+    depends_on:
+      tls-server:
+        condition: service_healthy
+    profiles: ["tls"]
+
+  # ── QUIC Server ───────────────────────────────────────────────────────────────
+  quic-server:
+    build:
+      context: .
+      dockerfile: docker/quic-server/Dockerfile
+      args:
+        BASE_IMAGE: pqc-base:latest
+    image: pqc-quic-server:latest
+    container_name: quic-server
+    networks:
+      eval-net:
+        ipv4_address: 172.28.0.20
+    ports:
+      - "4434:4433/udp"
+    volumes: *common-volumes
+    environment:
+      <<: *common-env
+      QUIC_PORT: "4433"
+      QUIC_SIG_ALG: "${SIG_ALG:-mldsa65}"
+      QUIC_KEM_GROUP: "${KEM_GROUP:-mlkem768}"
+
+  # ── QUIC Client ───────────────────────────────────────────────────────────────
+  quic-client:
+    build:
+      context: .
+      dockerfile: docker/quic-client/Dockerfile
+      args:
+        BASE_IMAGE: pqc-base:latest
+    image: pqc-quic-client:latest
+    container_name: quic-client
+    networks:
+      eval-net:
+        ipv4_address: 172.28.0.21
+    volumes: *common-volumes
+    environment:
+      <<: *common-env
+      QUIC_SERVER_HOST: quic-server
+      QUIC_SERVER_PORT: "4433"
+      QUIC_KEM_GROUP: "${KEM_GROUP:-mlkem768}"
+      OUTPUT_LABEL: "quic_${KEM_GROUP:-mlkem768}_${NET_CONDITION:-ideal}"
+    depends_on:
+      - quic-server
+    profiles: ["quic"]
+
+  # ── Pumba (network emulator) ──────────────────────────────────────────────────
+  pumba:
+    image: gaiaadm/pumba:latest
+    container_name: pumba
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - eval-net
+    profiles: ["network"]
+    command: >
+      netem
+        --duration 24h
+        --tc-image gaiaadm/tc:latest
+        delay
+          --time ${DELAY_MS:-20}
+          --jitter ${JITTER_MS:-2}
+        loss
+          --percent ${LOSS_PCT:-0.1}
+        ${TARGET_CONTAINER:-tls-client}

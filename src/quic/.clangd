@@ -1,0 +1,102 @@
+# .clangd — Language server configuration for the QUIC source tree.
+#
+# The QUIC sources use POSIX APIs (pthread, clock_gettime, etc.) and the
+# MsQuic SDK, none of which are present on a Windows development host.
+#
+# On Windows: clangd uses ide_stubs/msquic.h (a minimal type stub) so that
+#   the source files parse without cascading "unknown type" errors.
+#   Build and execution happen exclusively inside the Linux Docker container.
+#
+# On Linux / inside Docker: clangd finds the real headers at the paths set
+#   by -I flags and the stub is never needed.
+#
+# NOTE: The ide_stubs/ directory is excluded from all diagnostics — those
+#   files are hand-written type stubs, not production code.
+
+---
+# ── Suppress all diagnostics for the IDE stubs (they are not compiled) ─────
+If:
+  PathMatch: ".*[\\/]ide_stubs[\\/].*"
+
+Diagnostics:
+  Suppress: "*"
+
+---
+# ── QUIC production source files ─────────────────────────────────────────────
+If:
+  PathMatch: ".*[\\/]src[\\/]quic[\\/][^/\\\\]+\\.(c|h)$"
+
+CompileFlags:
+  Add:
+    # Target triple: treat these files as Linux code even on a Windows host.
+    - --target=x86_64-pc-linux-gnu
+
+    # POSIX feature-test macros — must precede any system-header inclusion
+    # so that pthread_mutex_t, struct timespec, clock_gettime, etc. are
+    # declared by the standard headers on a Linux sysroot.
+    - -D_POSIX_C_SOURCE=200809L
+    - -D_GNU_SOURCE
+
+    # C standard: matches the CMakeLists.txt setting.
+    - -std=c11
+
+    # ── Include search order ────────────────────────────────────────────────
+    #
+    # 1. ide_stubs/ (project-local, Windows host fallback)
+    #    Contains a hand-written msquic.h stub with just enough type
+    #    definitions for clangd to parse the source without errors.
+    #    On Linux the real header at /opt/msquic/include is found first
+    #    (listed at priority 2 below), so the stub is never used there.
+    - -I${workspaceFolder}/src/quic/ide_stubs
+
+    # 2. Real MsQuic SDK headers (inside Docker / Linux host with SDK).
+    - -I/opt/msquic/include
+
+    # 3. OQS-enabled OpenSSL headers (built inside the Docker container).
+    - -I/opt/openssl/include
+
+    # 4. liboqs headers.
+    - -I/opt/oqs/include
+
+    # Do not stop after the first batch of errors; show all diagnostics.
+    - -ferror-limit=0
+
+  # Strip Windows-specific flags that CMake or the MSVC-targeting host
+  # toolchain may inject, since we are targeting Linux.
+  Remove:
+    - -fms-extensions
+    - -fms-compatibility
+    - /W*
+    - /wd*
+    - /MT
+    - /MD
+    - /GR*
+    - /EH*
+
+Diagnostics:
+  # Suppress only the "file not found" class of diagnostic so that the
+  # stub header fallback above can take effect without clangd bailing out
+  # on the very first missing include and cascading into hundreds of
+  # "unknown type / undeclared identifier" secondary errors.
+  Suppress:
+    - pp_file_not_found
+    - pp_include_next_absolute_path
+
+  ClangTidy:
+    Add:
+      - clang-analyzer-*
+      - bugprone-*
+      - performance-*
+    Remove:
+      # MsQuic uses reserved identifiers extensively in its public API;
+      # suppress these checks to avoid noise we cannot action.
+      - bugprone-reserved-identifier
+      - bugprone-macro-parentheses
+      # readability-function-cognitive-complexity fires on the MsQuic
+      # callback switch-statement pattern which is intentional.
+      - readability-function-cognitive-complexity
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true

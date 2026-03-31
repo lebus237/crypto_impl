@@ -1,0 +1,167 @@
+# =============================================================================
+# scenarios.yaml — Experiment configuration for PQC TLS/QUIC evaluation
+#
+# Referenced by: scripts/run_experiments.sh, analysis/parse_results.py
+# =============================================================================
+
+# ── Fixed signature algorithm ─────────────────────────────────────────────────
+# ML-DSA65 (FIPS 204, NIST Level III ≈ 192-bit classical security) is used
+# for server authentication across ALL KEM experiments. Keeping this constant
+# isolates the KEM as the sole performance variable, exactly as in the paper.
+signature_algorithm: mldsa65
+
+# ── KEMs under evaluation ─────────────────────────────────────────────────────
+# Grouped by type (traditional / hybrid / post_quantum) and NIST security level.
+# The string values are OQS-Provider group names passed directly to
+# SSL_CTX_set1_groups_list() for TLS, or written into the OpenSSL Groups
+# directive for QUIC.
+kems:
+  traditional:
+    # Classical elliptic-curve Diffie-Hellman key exchange
+    level_I:
+      - p256 # NIST P-256 / secp256r1  — ~128-bit classical security
+      - x25519 # Curve25519 (RFC 7748)   — ~128-bit classical security
+    level_III:
+      - p384 # NIST P-384 / secp384r1  — ~192-bit classical security
+      - x448 # Curve448 / Goldilocks    — ~224-bit classical security
+    level_V:
+      - p521 # NIST P-521 / secp521r1  — ~256-bit classical security
+
+  hybrid:
+    # Concatenation of a classical and a post-quantum key share.
+    # Provides security as long as at least one component is unbroken —
+    # protecting against both classical and future quantum adversaries.
+    # Recommended transition strategy (NIST IR 8547).
+    level_I:
+      - x25519_mlkem512 # X25519    + ML-KEM-512
+      - secp256r1_mlkem512 # P-256     + ML-KEM-512
+    level_III:
+      - x25519_mlkem768 # X25519    + ML-KEM-768  ← primary hybrid
+      - secp384r1_mlkem768 # P-384     + ML-KEM-768
+      - x448_mlkem768 # X448      + ML-KEM-768
+    level_V:
+      - x25519_mlkem1024 # X25519    + ML-KEM-1024
+      - secp521r1_mlkem1024 # P-521     + ML-KEM-1024
+
+  post_quantum:
+    # ── Level I (~128-bit classical security) ────────────────────────────────
+    # ML-KEM-512: FIPS 203, lattice-based (Module-LWE). Primary NIST PQC KEM.
+    # HQC-128:    Code-based (quasi-cyclic). Backup KEM for algorithm diversity.
+    level_I:
+      - mlkem512 # ML-KEM-512 — FIPS 203, Lattice (Module-LWE)
+      - hqc128 # HQC-128    — In-process, Code-based
+
+    # ── Level III (~192-bit classical security) ──────────────────────────────
+    level_III:
+      - mlkem768 # ML-KEM-768 — FIPS 203, Lattice (Module-LWE)  ← primary PQ
+      - hqc192 # HQC-192    — In-process, Code-based
+
+    # ── Level V (~256-bit classical security) ────────────────────────────────
+    level_V:
+      - mlkem1024 # ML-KEM-1024 — FIPS 203, Lattice (Module-LWE)
+      - hqc256 # HQC-256     — In-process, Code-based
+
+# ── Signature algorithms evaluated separately ─────────────────────────────────
+# (Not used in main KEM comparison — only for the signature-focused sub-study)
+signatures:
+  lattice_based:
+    - name: mldsa44 # ML-DSA-44 (FIPS 204)  — NIST Level II
+      fips: "204"
+      level: II
+    - name: mldsa65 # ML-DSA-65 (FIPS 204)  — NIST Level III  ← default
+      fips: "204"
+      level: III
+    - name: mldsa87 # ML-DSA-87 (FIPS 204)  — NIST Level V
+      fips: "204"
+      level: V
+    - name: falcon512 # FN-DSA-512 (in-process) — NIST Level I
+      fips: "in_process"
+      level: I
+    - name: falcon1024 # FN-DSA-1024 (in-process) — NIST Level V
+      fips: "in_process"
+      level: V
+  hash_based:
+    - name: sphincssha2128fsimple # SLH-DSA-128f (FIPS 205) fast variant
+      fips: "205"
+      level: I
+    - name: sphincssha2128ssimple # SLH-DSA-128s (FIPS 205) small variant
+      fips: "205"
+      level: I
+    - name: sphincssha2192fsimple # SLH-DSA-192f (FIPS 205) fast variant
+      fips: "205"
+      level: III
+    - name: sphincssha2256fsimple # SLH-DSA-256f (FIPS 205) fast variant
+      fips: "205"
+      level: V
+
+# ── NIST security levels ───────────────────────────────────────────────────────
+# Approximate classical security equivalences used for grouping results.
+nist_levels:
+  I: { classical_bits: 128, description: "≥ AES-128 search effort" }
+  II: { classical_bits: 160, description: "≥ SHA-256 collision effort" }
+  III: { classical_bits: 192, description: "≥ AES-192 search effort" }
+  IV: { classical_bits: 224, description: "≥ SHA-384 collision effort" }
+  V: { classical_bits: 256, description: "≥ AES-256 search effort" }
+
+# ── Network conditions ────────────────────────────────────────────────────────
+# Pumba (Linux tc netem) parameters applied at the Docker container level.
+# The client-side container has these conditions applied; the server is unaffected.
+network_conditions:
+  ideal:
+    delay_ms: 0
+    jitter_ms: 0
+    loss_pct: 0.0
+    description: "Loopback-equivalent — isolates cryptographic cost"
+
+  low_loss:
+    delay_ms: 20
+    jitter_ms: 2
+    loss_pct: 0.1
+    description: "Good broadband (typical home / office LAN)"
+
+  medium_loss:
+    delay_ms: 50
+    jitter_ms: 5
+    loss_pct: 1.0
+    description: "Moderate congestion or 4G mobile network"
+
+  high_loss:
+    delay_ms: 100
+    jitter_ms: 10
+    loss_pct: 5.0
+    description: "Poor connection (satellite link or congested Wi-Fi)"
+
+# ── Measurement parameters ─────────────────────────────────────────────────────
+measurement:
+  n_runs: 1000 # Number of measured handshakes per scenario
+  warmup_runs: 50 # Discarded warm-up runs (JIT, CPU cache warm-up)
+  handshake_timeout_s: 10 # Per-handshake timeout before marking as failed
+  inter_run_delay_us:
+    500 # Microseconds between consecutive runs
+    # (prevents port-reuse collisions on loopback)
+  max_failure_pct: 10 # Abort scenario if failure rate exceeds this %
+
+# ── Protocols ─────────────────────────────────────────────────────────────────
+protocols:
+  tls:
+    description: "TLS 1.3 over TCP (OpenSSL 3.3.2 + OQS-Provider 0.7.0)"
+    port: 4433
+    transport: tcp
+
+  quic:
+    description: "QUIC (TLS 1.3 integrated) over UDP (MsQuic 2.4.4)"
+    port: 4433
+    transport: udp
+
+# ── Output paths (inside containers) ─────────────────────────────────────────
+paths:
+  cert_dir: /certs
+  results_dir: /results
+
+# ── Output filename convention ────────────────────────────────────────────────
+# Timing log files are named: <protocol>_<kem>_<network>.log
+# Pcap files are named:       <protocol>_<kem>_<network>.pcapng
+# Example: tls_x25519_mlkem768_medium_loss.log
+output_naming:
+  timing_pattern: "{protocol}_{kem}_{network}.log"
+  pcap_pattern: "{protocol}_{kem}_{network}.pcapng"

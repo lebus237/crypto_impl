@@ -1,0 +1,107 @@
+# =============================================================================
+# .clangd — Root-level language server configuration
+#
+# This project contains source files that are ONLY compiled inside Linux
+# Docker containers (Ubuntu 24.04). The QUIC sources depend on:
+#   - MsQuic SDK      (/opt/msquic/include/msquic.h)
+#   - POSIX pthreads  (pthread_mutex_t, pthread_cond_t, etc.)
+#   - POSIX time      (struct timespec, clock_gettime, CLOCK_MONOTONIC)
+#   - OQS-OpenSSL     (/opt/openssl/include/openssl/*.h)
+#
+# None of these headers are present on a Windows development host, causing
+# clangd to emit cascading "file not found / unknown type" diagnostics that
+# are false positives. The blocks below suppress those diagnostics for the
+# QUIC subtree while keeping full checking for the TLS subtree (which only
+# needs OpenSSL headers that are typically available via vcpkg or WSL).
+#
+# To get full IDE support on Windows, use WSL2 and point clangd to the
+# WSL sysroot, or build the compile_commands.json inside the container and
+# mount it back to the host.
+# =============================================================================
+
+---
+# ── QUIC source files (Linux/Docker only) ─────────────────────────────────────
+# Suppress ALL diagnostics for src/quic/ because the required headers
+# (msquic.h, pthread.h with POSIX types, time.h with struct timespec) are
+# not present on the Windows host. The code is correct; it will be compiled
+# exclusively inside the Docker container.
+If:
+  PathMatch: ".*[\\/]src[\\/]quic[\\/].*\\.(c|h)$"
+
+CompileFlags:
+  Add:
+    - --target=x86_64-pc-linux-gnu
+    - -D_POSIX_C_SOURCE=200809L
+    - -D_GNU_SOURCE
+    - -std=c11
+    - -I/opt/msquic/include
+    - -I/opt/openssl/include
+    - -I/opt/oqs/include
+    - -ferror-limit=0
+  Remove:
+    - -fms-extensions
+    - -fms-compatibility
+
+Diagnostics:
+  # Suppress every diagnostic class for these files on the Windows host.
+  # This prevents the "msquic.h not found" error from cascading into
+  # hundreds of "unknown type / undeclared identifier" secondary errors.
+  Suppress:
+    - pp_file_not_found
+    - pp_include_next_absolute_path
+    - err_pp_file_not_found
+    - err_undeclared_use
+    - err_unknown_typename
+    - err_typecheck_incompatible_type
+    - err_use_of_undeclared_identifier
+    - err_func_def_incomplete_result
+
+---
+# ── TLS source files ───────────────────────────────────────────────────────────
+# TLS sources use OpenSSL 3.x built from source at /opt/openssl inside
+# Docker. Enable full diagnostics but suppress only the header-not-found
+# error so editors on the host can still navigate and get completions if
+# OpenSSL system headers are available (e.g. via apt install libssl-dev).
+If:
+  PathMatch: ".*[\\/]src[\\/]tls[\\/].*\\.(c|h)$"
+
+CompileFlags:
+  Add:
+    - --target=x86_64-pc-linux-gnu
+    - -D_POSIX_C_SOURCE=200809L
+    - -D_GNU_SOURCE
+    - -std=c11
+    - -I/opt/openssl/include
+    - -I/opt/oqs/include
+    # Fall back to system OpenSSL if the container path is absent
+    - -I/usr/include/openssl
+    - -ferror-limit=0
+  Remove:
+    - -fms-extensions
+    - -fms-compatibility
+
+Diagnostics:
+  Suppress:
+    - pp_file_not_found
+    - pp_include_next_absolute_path
+  ClangTidy:
+    Add:
+      - clang-analyzer-*
+      - bugprone-*
+      - performance-*
+      - cert-*
+    Remove:
+      - bugprone-reserved-identifier
+      - bugprone-macro-parentheses
+      - cert-err33-c
+
+---
+# ── All other files (scripts, configs, analysis) ──────────────────────────────
+# Permissive baseline for everything else in the project.
+If:
+  PathMatch: ".*"
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
