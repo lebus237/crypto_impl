@@ -15,7 +15,11 @@
  *              [--verbose]
  */
 
-#define _POSIX_C_SOURCE 200809L
+/* _GNU_SOURCE is set implicitly by -std=gnu11 (CMAKE_C_EXTENSIONS ON).
+ * We define it here explicitly as a belt-and-suspenders measure so that
+ * nanosleep(), clock_gettime(), and all other POSIX/GNU extensions are
+ * available regardless of how the file is compiled. */
+#define _GNU_SOURCE
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -31,6 +35,17 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+/* ── Portable microsecond sleep (replaces usleep which is hidden by glibc
+ * when _POSIX_C_SOURCE >= 200809L because POSIX.1-2008 deprecated it).
+ * nanosleep() is unambiguously available under _POSIX_C_SOURCE >= 199309L. */
+static inline void sleep_us(long us)
+{
+    struct timespec ts;
+    ts.tv_sec  = us / 1000000L;
+    ts.tv_nsec = (us % 1000000L) * 1000L;
+    nanosleep(&ts, NULL);
+}
 
 /* ── Defaults ────────────────────────────────────────────────────────────── */
 #define DEFAULT_HOST        "tls-server"
@@ -235,9 +250,11 @@ int main(int argc, char *argv[])
      * cost of the cryptographic operations each time.
      */
     SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
-    SSL_CTX_set_options(ctx,
-        SSL_OP_NO_TICKET |
-        SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION);
+    /* SSL_OP_NO_TICKET disables TLS session tickets, forcing a full
+     * handshake on every connection.  TLS 1.3 does not use the older
+     * SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION mechanism, so we
+     * omit it to avoid the OpenSSL 3.x deprecation warning. */
+    SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
 
     /* ── Load CA certificate for server verification ─────────────────────── */
     if (SSL_CTX_load_verify_locations(ctx, cfg.ca_cert, NULL) == 1) {
@@ -274,7 +291,7 @@ int main(int argc, char *argv[])
         if (fd < 0) {
             fprintf(stderr, "[error] TCP connect failed on run %d\n", run);
             fail_count++;
-            usleep(10000); /* 10 ms back-off before retry */
+            sleep_us(10000); /* 10 ms back-off before retry */
             continue;
         }
 
@@ -337,7 +354,9 @@ int main(int argc, char *argv[])
          * (TIME_WAIT on the server side). 500 µs is negligible relative to
          * handshake latency but avoids ECONNREFUSED on fast hardware.
          */
-        usleep(500);
+        /* 500 µs between connections — negligible vs. handshake latency
+         * but prevents TIME_WAIT port-reuse collisions on loopback. */
+        sleep_us(500);
     }
 
     /* ── Finalize ────────────────────────────────────────────────────────── */

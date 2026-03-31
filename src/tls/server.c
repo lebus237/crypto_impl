@@ -12,7 +12,10 @@
  *   tls-server [--port PORT] [--cert FILE] [--key FILE] [--kem GROUP] [--verbose]
  */
 
-#define _POSIX_C_SOURCE 200809L
+/* _GNU_SOURCE exposes all POSIX/GNU extensions (nanosleep, SO_REUSEPORT,
+ * etc.) regardless of the -std= flag used by the compiler.  It must be
+ * defined before any system header is included. */
+#define _GNU_SOURCE
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
@@ -249,10 +252,19 @@ int main(int argc, char *argv[])
             handshake_count++;
             if (verbose) {
                 const SSL_CIPHER *cipher = SSL_get_current_cipher(ssl);
+                /* SSL_get0_group_name() was added in OpenSSL 3.2.0.
+                 * Guard it so the binary still compiles if, for any
+                 * reason, an older OpenSSL header is resolved by CMake
+                 * (e.g. the system libssl-dev on Ubuntu 24.04 is 3.0.x). */
+#if OPENSSL_VERSION_NUMBER >= 0x30200000L
+                const char *grp = SSL_get0_group_name(ssl);
+#else
+                const char *grp = NULL;  /* not available before 3.2 */
+#endif
                 fprintf(stderr, "[handshake #%ld] cipher=%s  group=%s\n",
                         handshake_count,
                         cipher ? SSL_CIPHER_get_name(cipher) : "?",
-                        SSL_get0_group_name(ssl) ? SSL_get0_group_name(ssl) : "?");
+                        grp    ? grp                          : "(N/A)");
             }
         }
 
