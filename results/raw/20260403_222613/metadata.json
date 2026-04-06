@@ -1,0 +1,10 @@
+{
+  "timestamp":       "20260403_222613",
+  "protocols":       ["tls","quic"],
+  "networks":        ["ideal"],
+  "n_kems":          1,
+  "n_runs":          1000,
+  "warmup_runs":     50,
+  "sig_alg":         "mldsa65",
+  "results_dir":     "/home/bruno/RESEARCH/crypto_impl/results/raw/20260403_222613"
+}
